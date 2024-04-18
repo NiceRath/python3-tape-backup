@@ -2,6 +2,8 @@
 
 This is a generic Python3 script that is able to back-up directories to tapes/tape-libraries using [tar](https://linux.die.net/man/1/tar) & [mtx](https://linux.die.net/man/1/mtx).
 
+Tested with [Dell PowerVault TL1000](https://www.dell.com/en-us/shop/data-storage-and-backup/powervault-tl1000/spd/storage-tl1000/pw_tl1000_11595).
+
 It is meant to be lightweight.
 
 A status e-mail with some stats is sent once the backup is finished.

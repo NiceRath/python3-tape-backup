@@ -8,6 +8,8 @@ It is meant to be lightweight.
 
 A status e-mail with some stats is sent once the backup is finished.
 
+If there are many small files - the throughput will be low. With larger files we've seen 150-300MB/s with TLO7 (uncompressed).
+
 ```text
 Backup job stati:
 

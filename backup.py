@@ -35,7 +35,7 @@ CRYPTMOUNT_SCRIPT = '/usr/local/sbin/cryptmount/cryptmount.sh'
 CRYPTMOUNT_PREFIX = 'crypt'
 MAIL_FROM = '<YOUR-SENDER>'
 MAIL_TO = '<YOUR-ADMIN>'
-TAPE_CAPACITY_TB = 10
+TAPE_CAPACITY_TB = 10  # you might need to tweak this value - it's about the 'uncompressed' tape size - a little lower
 # NOTE: folder are relative from the LVM mountpoint
 FOLDER_EXCLUSIONS = ['lost+found']
 FOLDER_INCLUSIONS = []  # if defined => only the ones listed will be processed (for manual backup of some folder)

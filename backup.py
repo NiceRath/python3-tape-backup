@@ -5,6 +5,7 @@ from subprocess import PIPE as subprocess_pipe
 from datetime import datetime
 from traceback import print_exc
 from time import sleep
+from sys import exit as sys_exit
 
 # tested with Dell TL1000 tape library & LVM
 # creates LVM shapshot of encrypted LVM volume and uses it as backup-source
@@ -51,12 +52,13 @@ TRY_RUN = False  # this will create snapshots and move cartridges inside the tap
 TAR_CMD = 'tar -chf'
 TAR_ARGS = '--blocking-factor 2048'
 SPECIAL_TAPE_PREFIXES = []  # folders with those prefixes will be placed on their own tape
+STATUS_SUCCESS = 'SUCCESS'
 
 
 class TapeBackup:
     def __init__(self):
         self.SG_DEV = None
-        self.STATUS = 'SUCCESS'
+        self.STATUS = STATUS_SUCCESS
         self.MODE = ''
         self.ERROR_MSGS = []
         self.BACKUP_SRC_PATH = self._shell(f'df -h | grep {SNAP_VG}-{SNAP_LV}')[0].rsplit(' ', 1)[1]
@@ -100,6 +102,8 @@ class TapeBackup:
                 subj=f"{self.MODE}{self.STATUS}",
                 body=f"Backup job stati:\n\n{stats_str}"
             )
+            if self.STATUS != STATUS_SUCCESS:
+                sys_exit(1)
 
         except (Exception, KeyboardInterrupt) as error:
             # clean-up snapshot etc. if backup fails hard
@@ -293,7 +297,6 @@ class TapeBackup:
                         tape_prefix = prefix
                         break
 
-
             if DEBUG:
                 if tape_prefix is not None:
                     self._log(f"FILTERING FOR PREFIX {tape_prefix}")
@@ -435,7 +438,7 @@ class TapeBackup:
         _msg = f"An error occurred:\n{msg}"
         self._log(_msg)
         self._mail(subj='ERROR', body=_msg)
-        raise SystemExit
+        sys_exit(1)
 
     @staticmethod
     def _log(output: str) -> None:

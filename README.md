@@ -46,18 +46,46 @@ Calculated throughput: 61.02 MB/s
 
 **WARNING**: This kind of restore can take a long time, as it needs to read the whole tape archive. (*as it has no index*)
 
+
+### Get active SG-device
+
 ```bash
-DEV_LIBRARY='/dev/st0'  # number might differ
+ls /dev/ | grep sg[0-9]
+mtx -f /dev/sgN status 2> /dev/null  # correct one displays the current inventory
+```
 
-# optional: read tape content
-tar -tvf "$DEV_LIBRARY" --blocking-factor 2048
-mt -f "$DEV_LIBRARY" rewind
+Update the `/dev/sg0` references in the other commands.
 
-# restore
+### Check what tape to load
+
+```bash
+mtx -f /dev/sg0 inventory
+mtx -f /dev/sg0 status
+```
+
+### Load tape
+
+```bash
+TAPE_ID="AA000000"
+mtx -f /dev/sg0 load "$TAPE_ID"
+```
+
+### Read tape content
+
+**WARNING**: Also takes a long time.
+
+```bash
+tar -tvf /dev/sg0 --blocking-factor 2048
+mt -f /dev/sg0 rewind
+```
+
+### Restore
+
+```bash
 DEST_PATH='/tmp/restore'
 TO_RESTORE='<DIRECTORY>/<PATH-TO-FILE-OR-DIR>'
 SNAPSHOT_NAME='snap_tape'
 
 mkdir "$DEST_PATH"
-tar -xvf "$DEV_LIBRARY" "${SNAPSHOT_NAME}/${TO_RESTORE}" -C "$DEST_PATH" --blocking-factor 2048
+tar -xvf /dev/sg0 "${SNAPSHOT_NAME}/${TO_RESTORE}" -C "$DEST_PATH" --blocking-factor 2048
 ```

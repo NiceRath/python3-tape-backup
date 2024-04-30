@@ -39,3 +39,25 @@ Calculated throughput: 61.02 MB/s
 
 ...
 ```
+
+----
+
+## Restore
+
+**WARNING**: This kind of restore can take a long time, as it needs to read the whole tape archive. (*as it has no index*)
+
+```bash
+DEV_LIBRARY='/dev/st0'  # number might differ
+
+# optional: read tape content
+tar -tvf "$DEV_LIBRARY" --blocking-factor 2048
+mt -f "$DEV_LIBRARY" rewind
+
+# restore
+DEST_PATH='/tmp/restore'
+TO_RESTORE='<DIRECTORY>/<PATH-TO-FILE-OR-DIR>'
+SNAPSHOT_NAME='snap_tape'
+
+mkdir "$DEST_PATH"
+tar -xvf "$DEV_LIBRARY" "${SNAPSHOT_NAME}/${TO_RESTORE}" -C "$DEST_PATH" --blocking-factor 2048
+```

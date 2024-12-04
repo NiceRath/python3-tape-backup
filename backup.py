@@ -33,6 +33,7 @@ SNAP_VG = "<YOUR-VG>"
 SNAP_LV = "<YOUR-LVM>"
 SNAP_SRC = f"/dev/{SNAP_VG}/{SNAP_LV}"
 SNAP_NAME = 'snap_tape'  # must match fstab mount !!
+CRYPTMOUNT = False
 CRYPTMOUNT_SCRIPT = '/usr/local/sbin/cryptmount/cryptmount.sh'
 CRYPTMOUNT_PREFIX = 'crypt'
 MAIL_FROM = '<YOUR-SENDER>'
@@ -183,12 +184,18 @@ class TapeBackup:
     def _create_snapshot(self):
         self._log('Creating backup snapshot')
         self._shell(f'lvcreate -L{SNAP_SIZE} -s -n {SNAP_NAME} {SNAP_SRC}')
-        self._shell(f"bash {CRYPTMOUNT_SCRIPT} {SNAP_VG}-{SNAP_NAME} {CRYPTMOUNT_PREFIX}-{SNAP_NAME} {SNAP_MOUNT} ''")
+        if CRYPTMOUNT:
+            self._shell(f"bash {CRYPTMOUNT_SCRIPT} {SNAP_VG}-{SNAP_NAME} {CRYPTMOUNT_PREFIX}-{SNAP_NAME} {SNAP_MOUNT} ''")
+
+        else:
+            self._shell(f"mount /dev/{SNAP_VG}/{SNAP_NAME} {SNAP_MOUNT}")
 
     def _remove_snapshot(self):
         self._log('Removing backup snapshot')
         self._shell(f'umount {SNAP_MOUNT}')
-        self._shell(f'cryptsetup luksClose /dev/mapper/{CRYPTMOUNT_PREFIX}-{SNAP_NAME}')
+        if CRYPTMOUNT:
+            self._shell(f'cryptsetup luksClose /dev/mapper/{CRYPTMOUNT_PREFIX}-{SNAP_NAME}')
+
         self._shell(f'lvremove /dev/{SNAP_VG}/{SNAP_NAME} -y')
 
     def _create_content_index_file(self, dir_list: list) -> str:

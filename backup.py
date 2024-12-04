@@ -1,11 +1,12 @@
 #!/usr/bin/python3
 
-from subprocess import Popen as subprocess_popen
-from subprocess import PIPE as subprocess_pipe
+from pathlib import Path
+from time import sleep
 from datetime import datetime
 from traceback import print_exc
-from time import sleep
 from sys import exit as sys_exit
+from subprocess import Popen as subprocess_popen
+from subprocess import PIPE as subprocess_pipe
 
 # tested with Dell TL1000 tape library & LVM
 # creates LVM shapshot of encrypted LVM volume and uses it as backup-source
@@ -38,20 +39,22 @@ MAIL_FROM = '<YOUR-SENDER>'
 MAIL_TO = '<YOUR-ADMIN>'
 TAPE_CAPACITY_TB = 10  # you might need to tweak this value - it's about the 'uncompressed' tape size - a little lower
 # NOTE: folder are relative from the LVM mountpoint
-FOLDER_EXCLUSIONS = ['lost+found']
-FOLDER_INCLUSIONS = []  # if defined => only the ones listed will be processed (for manual backup of some folder)
+DIR_TAPE_CONTENT_INDEX = 'tape_content_index'
+DIR_EXCLUSIONS = ['lost+found', 'restore', DIR_TAPE_CONTENT_INDEX]
+DIR_INCLUSIONS = []  # if defined => only the ones listed will be processed (for manual backup of some folder)
+SPECIAL_TAPE_PREFIXES = []  # folders with those prefixes will be placed on their own tape
 
 SEND_MAIL = f"/usr/sbin/sendmail -F '{MAIL_FROM}' -f '{MAIL_FROM}' -t '${MAIL_TO}'"
 ST_DEV = 'st0'
 ST_BLOCK_SIZE = '64k'
 TAPE_LABEL_LENGTH = 8
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
+TIME_FORMAT_FILE = '%Y-%m-%d_%H-%M-%S'
 TAPE_CAPACITY_MB = TAPE_CAPACITY_TB * 1_000_000
 DEBUG = True
 TRY_RUN = False  # this will create snapshots and move cartridges inside the tape library - but skip the actual backup.
 TAR_CMD = 'tar -chf'
 TAR_ARGS = '--blocking-factor 2048'
-SPECIAL_TAPE_PREFIXES = []  # folders with those prefixes will be placed on their own tape
 STATUS_SUCCESS = 'SUCCESS'
 
 
@@ -76,16 +79,16 @@ class TapeBackup:
 
             # prerequisites
             self.SG_DEV = self._get_active_sg()
-            folders = self._get_backup_folder_sizes()
+            dirs = self._get_backup_dir_sizes()
             self._unload_transfer()
             available_slots = self._get_available_slots()
-            slot_folder_mapping = self._get_folder_slot_mapping(folders=folders, slots=available_slots)
+            slot_dir_mapping = self._get_dir_slot_mapping(dirs=dirs, slots=available_slots)
 
             # starting actual backup process
             self._create_snapshot()
             stats = self._backup(
-                slot_folder_mapping=slot_folder_mapping,
-                folders=folders,
+                slot_dir_mapping=slot_dir_mapping,
+                dirs=dirs,
                 slots=available_slots,
             )
             stats_str = self._format_stati(
@@ -114,14 +117,13 @@ class TapeBackup:
 
     # methods for actively backing-up
 
-    def _backup(self, slot_folder_mapping: dict, folders: dict, slots: dict) -> dict:
-        # return:
-        #   {SLOT_ID: {'label': SLOT_LABEL, 'result': {'start_time': START_TIME, 'stop_time': STOP_TIME, 'exit_code', EXIT_CODE, folders: {'size': SIZE, 'size_mb': SIZE_MB} } } }
+    def _backup(self, slot_dir_mapping: dict, dirs: dict, slots: dict) -> dict:
+        #   {SLOT_ID: {'label': SLOT_LABEL, 'result': {'start_time': START_TIME, 'stop_time': STOP_TIME, 'exit_code', EXIT_CODE, dirs: {'size': SIZE, 'size_mb': SIZE_MB} } } }
         self._log('Starting backup loop')
         result_dict = {}
 
-        for slot_id, folder_list in slot_folder_mapping.items():
-            if len(folder_list) == 0:
+        for slot_id, dir_list in slot_dir_mapping.items():
+            if len(dir_list) == 0:
                 continue
 
             self._load_tape(slot_id=slot_id)
@@ -129,7 +131,7 @@ class TapeBackup:
             tape_result_dict = {}
             self._log(f"Backing-up to tape in slot '{slot_id}' with label '{slot_label}'")
 
-            tar_stats = self._tar(folder_list=folder_list, folder_sizes=folders)
+            tar_stats = self._tar(dir_list=dir_list, dir_sizes=dirs)
 
             result_dict[slot_id] = {'label': slot_label, 'result': tar_stats}
             self._unload_transfer()
@@ -137,43 +139,45 @@ class TapeBackup:
         self._log('Finished backup loop')
         return result_dict
 
-    def _tar(self, folder_list: list, folder_sizes: dict) -> dict:
-        # NOTE: we first tried a per-folder loop with 'tar append (arf)'
+    def _tar(self, dir_list: list, dir_sizes: dict) -> dict:
+        # NOTE: we first tried a per-directory loop with 'tar append (arf)'
         #       but this took forever to analyze before the copying process started
-        #       per example: for a 17 MB backup folder it took from 16:54:49 to 18:54:28 -.-
+        #       per example: for a 17 MB backup directory it took from 16:54:49 to 18:54:28 -.-
 
-        backup_src_list = []
+        backup_src_list = [self._create_content_index_file(dir_list)]
         stats = {'start_time': datetime.now()}
-        folder_stats = {}
+        dir_stats = {}
 
-        for folder in folder_list:
-            size_mb = int(folder_sizes[folder])
+        for d in dir_list:
+            size_mb = int(dir_sizes[d])
             if size_mb > 1000000:
-                folder_size = "%.2f TB" % (size_mb / 1000000)
+                dir_size = "%.2f TB" % (size_mb / 1000000)
 
             elif size_mb > 1000:
-                folder_size = "%.2f GB" % (size_mb / 1000)
+                dir_size = "%.2f GB" % (size_mb / 1000)
 
             else:
-                folder_size = f"{size_mb} MB"
+                dir_size = f"{size_mb} MB"
 
-            folder_stats[folder] = {'size': folder_size, 'size_mb': size_mb}
-            backup_src_list.append(f'{SNAP_MOUNT}/{folder}')
+            dir_stats[d] = {'size': dir_size, 'size_mb': size_mb}
+            backup_src_list.append(f'{SNAP_MOUNT}/{d}')
 
         if TRY_RUN:
             exit_code = 0
             sleep(10)
 
         else:
-            output, exit_code = self._shell(f"{TAR_CMD} /dev/{ST_DEV} {' '.join(backup_src_list)} {TAR_ARGS}", exit_code=True)
+            _, exit_code = self._shell(
+                f"{TAR_CMD} /dev/{ST_DEV} {' '.join(backup_src_list)} {TAR_ARGS}",
+                exit_code=True,
+            )
 
         if exit_code != 0:
             self.STATUS = 'FAILED'
 
         stats['exit_code'] = exit_code
         stats['stop_time'] = datetime.now()
-        stats['folders'] = folder_stats
-
+        stats['dirs'] = dir_stats
         return stats
 
     def _create_snapshot(self):
@@ -186,6 +190,19 @@ class TapeBackup:
         self._shell(f'umount {SNAP_MOUNT}')
         self._shell(f'cryptsetup luksClose /dev/mapper/{CRYPTMOUNT_PREFIX}-{SNAP_NAME}')
         self._shell(f'lvremove /dev/{SNAP_VG}/{SNAP_NAME} -y')
+
+    def _create_content_index_file(self, dir_list: list) -> str:
+        index_tmp_file = '/tmp/tape_content_index.txt'
+        index_file = Path(
+            f'{self.BACKUP_SRC_PATH}/{DIR_TAPE_CONTENT_INDEX}/'
+            f'tape_content_index_{datetime.now().strftime(TIME_FORMAT_FILE)}.txt'
+        )
+
+        for d in dir_list:
+            self._shell(f'cd / && find {SNAP_MOUNT[1:]}/{d} -type f >> {index_file}')
+
+        self._shell(f'cp {index_file} {index_tmp_file}')
+        return index_tmp_file
 
     # methods for tape interactions
 
@@ -252,44 +269,44 @@ class TapeBackup:
 
     # methods for internal purposes
 
-    def _get_backup_folder_sizes(self) -> dict:
-        folder_list = self._shell(f'du -smL {self.BACKUP_SRC_PATH}/* ')
-        folder_dict = {}
+    def _get_backup_dir_sizes(self) -> dict:
+        dir_list = self._shell(f'du -smL {self.BACKUP_SRC_PATH}/* ')
+        dir_dict = {}
 
-        for folder_str in folder_list:
-            size_mb = folder_str.split('\t', 1)[0]
-            name = folder_str.rsplit('/', 1)[1]
+        for dir_str in dir_list:
+            size_mb = dir_str.split('\t', 1)[0]
+            name = dir_str.rsplit('/', 1)[1]
 
-            if len(FOLDER_INCLUSIONS) > 0:
-                # if inclusions are set => filter available folders to the ones we want to back-up
-                if name in FOLDER_INCLUSIONS:
-                    folder_dict[name] = size_mb
+            if len(DIR_INCLUSIONS) > 0:
+                # if inclusions are set => filter available dirs to the ones we want to back-up
+                if name in DIR_INCLUSIONS:
+                    dir_dict[name] = size_mb
 
             else:
-                folder_dict[name] = size_mb
+                dir_dict[name] = size_mb
 
         if DEBUG:
-            self._log(f"Folders: '{folder_dict}'")
+            self._log(f"Directories: '{dir_dict}'")
 
-        return folder_dict
+        return dir_dict
 
-    def _get_folder_slot_mapping(self, folders: dict, slots: dict) -> dict:
-        # { SLOT_ID: [ FOLDER1, FOLDER2] }
-        slot_folder_mapping = {}
-        placed_folder_list = []  # to keep track of process folders
+    def _get_dir_slot_mapping(self, dirs: dict, slots: dict) -> dict:
+        # { SLOT_ID: [ DIR1, DIR2] }
+        slot_dir_mapping = {}
+        placed_dir_list = []  # to keep track of process dirs
 
         for slot in slots.keys():
-            folder_size = 0
-            folder_list = []
-            folder_skip = []
+            dir_size = 0
+            dir_list = []
+            dir_skip = []
             tape_prefix = None
 
             # check if prefix-filter should be applied (any prefixed dirs are unprocessed)
-            for name in folders.keys():
+            for name in dirs.keys():
                 if tape_prefix is not None:
                     break
 
-                if name in FOLDER_EXCLUSIONS or name in placed_folder_list:
+                if name in DIR_EXCLUSIONS or name in placed_dir_list:
                     continue
 
                 for prefix in SPECIAL_TAPE_PREFIXES:
@@ -301,46 +318,46 @@ class TapeBackup:
                 if tape_prefix is not None:
                     self._log(f"FILTERING FOR PREFIX {tape_prefix}")
 
-                self._log(f"SLOT {slot} | ALREADY PLACED {placed_folder_list}")
+                self._log(f"SLOT {slot} | ALREADY PLACED {placed_dir_list}")
 
             # filter dirs by prefix and/or size
-            for name, size in folders.items():
-                if name in FOLDER_EXCLUSIONS or name in placed_folder_list:
+            for name, size in dirs.items():
+                if name in DIR_EXCLUSIONS or name in placed_dir_list:
                     continue
 
                 if tape_prefix is not None and not name.startswith(f'{tape_prefix}_'):
                     if DEBUG:
-                        self._log(f"SLOT {slot} | FOLDER {name} | NOT PREFIXED")
+                        self._log(f"SLOT {slot} | DIRECTORY {name} | NOT PREFIXED")
 
                     continue
 
-                _size = (folder_size + int(size))
+                _size = (dir_size + int(size))
 
                 if _size < TAPE_CAPACITY_MB:
-                    folder_list.append(name)
-                    placed_folder_list.append(name)
-                    folder_size += int(size)
+                    dir_list.append(name)
+                    placed_dir_list.append(name)
+                    dir_size += int(size)
 
                 else:
-                    folder_skip.append(name)
+                    dir_skip.append(name)
                     if DEBUG:
-                        self._log(f"SLOT {slot} | FOLDER {name} | TOO BIG ({folder_size} + {size} > {TAPE_CAPACITY_MB})")
+                        self._log(f"SLOT {slot} | DIRECTORY {name} | TOO BIG ({dir_size} + {size} > {TAPE_CAPACITY_MB})")
 
-            self._log(f"SLOT {slot} | PREFIX {tape_prefix} | PLACED {placed_folder_list} | THIS {folder_list} | SKIP {folder_skip}")
-            slot_folder_mapping[slot] = folder_list
+            self._log(f"SLOT {slot} | PREFIX {tape_prefix} | PLACED {placed_dir_list} | THIS {dir_list} | SKIP {dir_skip}")
+            slot_dir_mapping[slot] = dir_list
 
-        processed_folders = placed_folder_list + FOLDER_EXCLUSIONS
-        unprocessed_folders = [folder for folder in folders if folder not in processed_folders]
-        if len(unprocessed_folders) > 0:
+        processed_dirs = placed_dir_list + DIR_EXCLUSIONS
+        unprocessed_dirs = [d for d in dirs if d not in processed_dirs]
+        if len(unprocessed_dirs) > 0:
             self.STATUS = 'ERROR'
-            self.UNPROCESSED = unprocessed_folders
+            self.UNPROCESSED = unprocessed_dirs
             self._log(
-                f"ERROR: Not all folders fit on the available tape slots! "
-                f"Unprocessed folders: '{unprocessed_folders}'"
+                f"ERROR: Not all dirs fit on the available tape slots! "
+                f"Unprocessed dirs: '{unprocessed_dirs}'"
             )
 
-        self._log(f'Tape to folder mapping: {slot_folder_mapping}')
-        return slot_folder_mapping
+        self._log(f'Tape to directory mapping: {slot_dir_mapping}')
+        return slot_dir_mapping
 
     def _shell(self, cmd: str, exit_code=False) -> (list, tuple):
         output = self.__process(cmd)

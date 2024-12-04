@@ -92,6 +92,7 @@ RESTORE_PATH="${BACKUP_PATH}/restore"
 mkdir "$RESTORE_PATH"
 tar -xvf /dev/st0 -C "$RESTORE_PATH" --blocking-factor 2048 "tmp/tape_content_index.txt"
 # press CTRL+C after a few seconds
+mt -f /dev/sg0 rewind
 less "${BACKUP_PATH}/restore/tmp/tape_content_index.txt"
 ```
 
